@@ -8,6 +8,8 @@ import os
 import yt_dlp
 import re
 import requests
+from keep_alive import keep_alive
+keep_alive()
     
 
 load_dotenv()
