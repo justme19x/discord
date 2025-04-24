@@ -1,4 +1,6 @@
 discord.py
 python-dotenv
-yt-dlp
+yt_dlp>=2024.03.10
 requests
+pynacl
+uvloop
