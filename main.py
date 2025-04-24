@@ -5,16 +5,16 @@ from dotenv import load_dotenv
 import yt_dlp
 import asyncio
 import os
-import yt_dlp
 import re
 import requests
-from keep_alive import keep_alive
-keep_alive()
-    
-
+"""
+ONLY FOR LINUX
+"""
+#import uvloop
+#asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 load_dotenv()
 
-token="MTM2NDcwNzk5OTE4NDE5NTY4NA.GJU7aU.0K9j1as58FsLAvn-Ftj-3L4qdv1vbg6u3J2iaQ"
+token = os.getenv('DISCORD_TOKEN')
 
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
@@ -29,6 +29,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
     print('------')
+    #bot.loop.create_task(clear_log_periodic())
 
 @bot.event
 async def on_member_join(member):
@@ -75,6 +76,21 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
+#functie de stergere automata a discord.log = economisire de spatiu
+
+async def clear_log_periodic():
+    while True:
+        try:
+            with open("discord.log", "w", encoding="utf-8") as f:
+                f.write("")
+            print("[LOG CLEANER] Logul a fost golit.")
+        except Exception as e:
+            print(f"[LOG CLEANER] Eroare la ștergerea logului: {e}")
+        await asyncio.sleep(300)
+
+
+
+
 # !hello 
 @bot.command()
 async def hello(ctx):
@@ -103,21 +119,6 @@ async def join_vc(ctx):
         await ctx.send("Trebuie să fii într-un voice channel mai întâi.")
         return None
 
-# Helper pentru extragerea titlului de pe Spotify
-def get_spotify_title(url):
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0"
-    }
-    match = re.search(r"track/([a-zA-Z0-9]+)", url)
-    if not match:
-        return url
-    track_id = match.group(1)
-    response = requests.get(f"https://open.spotify.com/oembed?url=https://open.spotify.com/track/{track_id}", headers=headers)
-    if response.ok:
-        return response.json().get("title", url)
-    return url
 
 # Comanda !play
 @bot.command()
@@ -130,39 +131,48 @@ async def play(ctx, *, query: str):
     if not vc:
         return
 
-    # Dacă linkul este de Spotify, extragem titlul
-    if "spotify.com/track" in query:
-        await ctx.send("🎧 Link Spotify detectat, caut pe YouTube...")
-        query = get_spotify_title(query)
 
     # Setări yt_dlp pentru căutare YouTube
     ydl_opts = {
-        'format': 'bestaudio',
-        'quiet': True,
-        'noplaylist': True,
-        'default_search': 'ytsearch1',
-    }
+    'format': 'bestaudio[ext=webm]/bestaudio/best',
+    'quiet': True,
+    'noplaylist': True,
+    'default_search': 'auto',       # caută singur pe YouTube
+    'source_address': '0.0.0.0',    # previne probleme de rețea
+    'cachedir': False               # evită cache care poate bloca
+}
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info = ydl.extract_info(query, download=False)
-            if 'entries' in info:
-                info = info['entries'][0]
+    if not query.startswith("http"):
+        query = f"ytsearch1:{query}"
 
-            stream_url = info.get('url')
-            title = info.get('title', 'Unknown')
 
-            if not stream_url:
-                await ctx.send("❌ Nu am găsit un link valid pentru redare.")
+
+    try:
+       with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = await asyncio.to_thread(ydl.extract_info, query, download=False)
+    
+        # Verifică dacă info e dintr-un search sau link direct
+        if 'entries' in info and isinstance(info['entries'], list):
+            if not info['entries']:
+                await ctx.send("❌ Nu am găsit rezultate pentru căutare.")
                 return
+            info = info['entries'][0]
 
-            last_played[ctx.guild.id] = (stream_url, title)
 
-        except Exception as e:
-            await ctx.send(f"❌ Eroare la extragerea melodiei: {e}")
+
+        stream_url = info.get('url')
+        title = info.get('title', 'Unknown')
+        if not stream_url:
+            await ctx.send("❌ Nu am găsit un link valid pentru redare.")
             return
 
-    # Adăugăm în coadă
+        last_played[ctx.guild.id] = (stream_url, title)
+
+    except Exception as e:
+        await ctx.send(f"❌ Eroare la extragerea melodiei: {e}")
+        return
+
+    # Coadă per server
     guild_id = ctx.guild.id
     if guild_id not in song_queue:
         song_queue[guild_id] = []
@@ -170,29 +180,46 @@ async def play(ctx, *, query: str):
     song_queue[guild_id].append((title, stream_url))
     await ctx.send(f"✅ Adăugat în coadă: **{title}**")
 
-    # Dacă nu se redă nimic, începe redarea automată
+    # Dacă nu e deja ceva care se redă, începe redarea
     if not vc.is_playing() and not vc.is_paused():
         await play_from_queue(ctx, vc)
+# 🔧 Funcție pentru inițializare audio
+def create_source(url):
+    return discord.FFmpegPCMAudio(
+        url,
+        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        options="-vn"
+    )
 
-# Funcție internă care redă din coadă
+# 🔁 Funcție internă care redă din coadă
 async def play_from_queue(ctx, vc):
     guild_id = ctx.guild.id
+
     if not song_queue.get(guild_id):
+        await ctx.send("📭 Coada s-a terminat.")
+        if vc.is_connected():
+            await vc.disconnect()
         return
 
     title, stream_url = song_queue[guild_id].pop(0)
-    source = discord.FFmpegPCMAudio(stream_url)
 
     def after_playing(error):
+        if error:
+            print(f"[After Play Error] {error}")
         fut = asyncio.run_coroutine_threadsafe(play_from_queue(ctx, vc), bot.loop)
         try:
             fut.result()
         except Exception as e:
-            print(f"Eroare în after_playing: {e}")
+            print(f"[Queue Error] {e}")
 
-    vc.play(source, after=after_playing)
-    await ctx.send(f"🎶 Se redă: **{title}**")
-
+    try:
+        source = create_source(stream_url)
+        vc.play(source, after=after_playing)
+        await ctx.send(f"🎶 Se redă: **{title}**")
+    except Exception as e:
+        await ctx.send(f"❌ Nu am putut reda piesa: **{title}**\n📛 Eroare: `{e}`")
+        print(f"[DEBUG STREAM URL]: {stream_url}")
+        await play_from_queue(ctx, vc)  # încearcă următoarea piesă
 
 @bot.command()
 async def queue(ctx):
@@ -212,6 +239,7 @@ async def skip(ctx):
     vc = ctx.voice_client
     if vc and vc.is_playing():
         vc.stop()  # declanșează funcția `after=` care redă următoarea
+        await asyncio.sleep(1)
         await ctx.send("⏭️ Am sărit la următoarea piesă.")
     else:
         await ctx.send("❌ Nu e nimic de sărit.")
@@ -249,6 +277,7 @@ async def stop(ctx):
     vc = ctx.voice_client
     if vc and (vc.is_playing() or vc.is_paused()):
         vc.stop()
+        await asyncio.sleep(1)
         await ctx.send("⏹️ Muzica a fost oprită.")
     else:
         await ctx.send("❌ Nu este nimic de oprit.")
@@ -276,8 +305,14 @@ async def replay(ctx):
 
     if vc.is_playing():
         vc.stop()
+        await asyncio.sleep(1)
 
-    source = discord.FFmpegPCMAudio(url)
+    source = discord.FFmpegPCMAudio(
+    url,
+    before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    options="-vn"  # dezactivează video (care poate cauza eroarea)
+)
+
     vc.play(source)
     await ctx.send(f"🔁 Se redă din nou: **{title}**")
 
