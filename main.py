@@ -7,14 +7,18 @@ import asyncio
 import os
 import re
 import requests
+
 """
 ONLY FOR LINUX
 """
 #import uvloop
 #asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+
+
 load_dotenv()
 
 token = os.getenv('DISCORD_TOKEN')
+rito_token = os.getenv('RIOT_API_KEY')
 
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
@@ -315,6 +319,129 @@ async def replay(ctx):
 
     vc.play(source)
     await ctx.send(f"🔁 Se redă din nou: **{title}**")
+
+
+
+
+import json
+
+def load_champion_names():
+    url = "http://ddragon.leagueoflegends.com/cdn/14.8.1/data/en_US/champion.json"
+    response = requests.get(url)
+    data = response.json()["data"]
+
+    id_to_name = {}
+    for champ_name, champ_info in data.items():
+        id_to_name[int(champ_info["key"])] = champ_info["name"]
+    
+    return id_to_name
+
+
+
+from datetime import datetime
+
+def convert_timestamp(ms):
+    dt = datetime.fromtimestamp(ms / 1000.0)
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+@bot.command()
+async def stats(ctx, *, input_text: str):
+    try:
+        name, tag = input_text.split('#')
+    except ValueError:
+        await ctx.send("❌ Format invalid. Folosește: `Nume#TAG` (ex: MitzuPitzu#EUNE)")
+        return
+
+    riot_headers = {"X-Riot-Token": rito_token}
+    url = f"https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{name}/{tag}"
+    
+    response = requests.get(url, headers=riot_headers)
+ 
+    if response.status_code != 200:
+        await ctx.send(f"❌ Nu am putut găsi invocatorul: `{name}#{tag}`\nCod răspuns: {response.status_code}")
+        return
+
+    data = response.json()
+    puuid = data['puuid']
+
+
+    url_champ= f"https://eun1.api.riotgames.com/lol/champion-mastery/v4/champion-masteries/by-puuid/{puuid}"
+    response_champ = requests.get(url_champ, headers=riot_headers)
+    
+
+    if response_champ.status_code != 200:
+        await ctx.send(f"❌ Nu am putut găsi invocatorul: `{name}#{tag}`\nCod răspuns: {response_champ.status_code}")
+        return
+    
+    data_champ = response_champ.json()
+
+    champion_dict = load_champion_names()
+
+    top_champs = ""
+    for champ in data_champ[:10]:
+        championId = champ['championId']
+        champ_name = champion_dict.get(championId, f"ID:{championId}")
+        championLevel = champ['championLevel']
+        championPoints = champ['championPoints']
+        championlastPlayTime = champ['lastPlayTime']
+        last_played = convert_timestamp(championlastPlayTime)
+
+        top_champs += f"🔸 {champ_name} | Nivel {championLevel} | {championPoints} puncte | Ultimul joc: {last_played}\n"
+
+
+
+
+#Obține summonerId din puuid
+    summoner_url = f"https://eun1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
+    summoner_resp = requests.get(summoner_url, headers=riot_headers)
+    if summoner_resp.status_code != 200:
+        await ctx.send("❌ Eroare la obținerea profilului.")
+        return
+
+    summoner_data = summoner_resp.json()
+    summoner_id = summoner_data['id']
+    summoner_level = summoner_data['summonerLevel']
+
+    # 3. Obține rank info
+    rank_url = f"https://eun1.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
+    rank_resp = requests.get(rank_url, headers=riot_headers)
+    rank_text = "❌ Nicio informație de ranked."
+    if rank_resp.status_code == 200:
+        ranks = rank_resp.json()
+        lines = []
+        for entry in ranks:
+            q = "Solo" if entry['queueType'] == "RANKED_SOLO_5x5" else "Flex"
+            winrate = round((entry['wins'] / (entry['wins'] + entry['losses'])) * 100)
+            games_played = entry['wins'] + entry['losses']
+            lines.append(f"🏆 **{q}**: {entry['tier']} {entry['rank']} ({entry['leaguePoints']} LP) | {entry['wins']}W/{entry['losses']}L | WR: {winrate}% din {games_played} meciuri! ")
+            
+        if lines:
+            rank_text = "\n".join(lines)
+
+    # 4. Verifică dacă e într-un meci live
+    live_url = f"https://eun1.api.riotgames.com/lol/spectator/v4/active-games/by-summoner/{summoner_id}"
+    live_resp = requests.get(live_url, headers=riot_headers)
+
+    live_status = "🔴 Nu este într-un meci acum."
+    if live_resp.status_code == 200:
+        live_data = live_resp.json()
+        # Găsește participantul nostru
+        for participant in live_data['participants']:
+            if participant['summonerName'].lower() == name.lower():
+                champ_id = participant['championId']
+                champ_name = champion_dict.get(champ_id, f"ID:{champ_id}")
+                game_mode = live_data.get('gameMode', 'Unknown')
+                live_status = f"🟢 Este într-un meci acum ({game_mode}) cu **{champ_name}**!"
+                break
+
+# Mesaj  
+    await ctx.send(
+        f"📛 **{name}#{tag}** (Lvl {summoner_level})\n\n"
+        f"📈 **Rank:**\n{rank_text}\n\n"
+        f"{live_status}\n\n"
+        f"🎯 **Top 10 campioni:**\n{top_champs}"
+    )
 
 
 
