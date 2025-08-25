@@ -3,4 +3,3 @@ python-dotenv
 yt_dlp>=2024.03.10
 requests
 pynacl
-uvloop
