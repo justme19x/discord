@@ -8,12 +8,6 @@ import os
 import re
 import requests
 
-"""
-ONLY FOR LINUX
-"""
-#import uvloop
-#asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-
 
 load_dotenv()
 
@@ -118,22 +112,32 @@ last_played = {}  # Ultima melodie redată
 async def join_vc(ctx):
     if ctx.author.voice:
         channel = ctx.author.voice.channel
-        return await channel.connect()
+        try:
+            print(f"[DEBUG] Încearcă să se conecteze la canalul: {channel.name}")
+            vc = await channel.connect()
+            print(f"[DEBUG] S-a conectat la canalul: {channel.name}")
+            return vc
+        except Exception as e:
+            await ctx.send(f"❌ Eroare la conectare în voice: {e}")
+            print(f"[ERROR CONNECT]: {e}")
+            return None
     else:
-        await ctx.send("Trebuie să fii într-un voice channel mai întâi.")
+        await ctx.send("❌ Trebuie să fii într-un voice channel mai întâi.")
         return None
-
 
 # Comanda !play
 @bot.command()
 async def play(ctx, *, query: str):
+    print(f"[DEBUG] Comanda !play primită cu: {query}")
     if not ctx.author.voice:
         await ctx.send("Trebuie să fii într-un voice channel.")
         return
 
     vc = ctx.voice_client or await join_vc(ctx)
     if not vc:
+        print("[DEBUG] VoiceClient este None")
         return
+
 
 
     # Setări yt_dlp pentru căutare YouTube
@@ -189,6 +193,7 @@ async def play(ctx, *, query: str):
         await play_from_queue(ctx, vc)
 # 🔧 Funcție pentru inițializare audio
 def create_source(url):
+    print(f"[DEBUG FFMPEG] Pornesc redare din: {url}")
     return discord.FFmpegPCMAudio(
         url,
         before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -201,8 +206,15 @@ async def play_from_queue(ctx, vc):
 
     if not song_queue.get(guild_id):
         await ctx.send("📭 Coada s-a terminat.")
-        if vc.is_connected():
-            await vc.disconnect()
+
+        # 🔍 Verificăm dacă mai e cineva în canal (în afară de bot)
+        members = [m for m in vc.channel.members if not m.bot]
+        if len(members) == 0:
+            await ctx.send("👋")
+            if vc.is_connected():
+                await vc.disconnect()
+        else:
+            await ctx.send("👂.")
         return
 
     title, stream_url = song_queue[guild_id].pop(0)
@@ -218,12 +230,18 @@ async def play_from_queue(ctx, vc):
 
     try:
         source = create_source(stream_url)
+        await asyncio.sleep(1)  # 🕐 Așteaptă o secundă pentru ca conexiunea voice să fie stabilă
         vc.play(source, after=after_playing)
+
         await ctx.send(f"🎶 Se redă: **{title}**")
+        print("[DEBUG] play() executat cu succes")
     except Exception as e:
         await ctx.send(f"❌ Nu am putut reda piesa: **{title}**\n📛 Eroare: `{e}`")
+        print(f"[ERROR @play_from_queue]: {e}")
         print(f"[DEBUG STREAM URL]: {stream_url}")
-        await play_from_queue(ctx, vc)  # încearcă următoarea piesă
+
+
+
 
 @bot.command()
 async def queue(ctx):
@@ -345,6 +363,7 @@ def convert_timestamp(ms):
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
+
 @bot.command()
 async def stats(ctx, *, input_text: str):
     try:
@@ -392,7 +411,7 @@ async def stats(ctx, *, input_text: str):
 
 
 
-#Obține summonerId din puuid
+
     summoner_url = f"https://eun1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
     summoner_resp = requests.get(summoner_url, headers=riot_headers)
     if summoner_resp.status_code != 200:
@@ -403,7 +422,7 @@ async def stats(ctx, *, input_text: str):
     summoner_id = summoner_data['id']
     summoner_level = summoner_data['summonerLevel']
 
-    # 3. Obține rank info
+    
     rank_url = f"https://eun1.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
     rank_resp = requests.get(rank_url, headers=riot_headers)
     rank_text = "❌ Nicio informație de ranked."
@@ -419,7 +438,7 @@ async def stats(ctx, *, input_text: str):
         if lines:
             rank_text = "\n".join(lines)
 
-    # 4. Verifică dacă e într-un meci live
+    
     live_url = f"https://eun1.api.riotgames.com/lol/spectator/v4/active-games/by-summoner/{summoner_id}"
     live_resp = requests.get(live_url, headers=riot_headers)
 
@@ -442,6 +461,70 @@ async def stats(ctx, *, input_text: str):
         f"{live_status}\n\n"
         f"🎯 **Top 10 campioni:**\n{top_champs}"
     )
+
+
+
+
+
+
+
+@bot.command()
+async def test_play(ctx):
+    if not ctx.author.voice:
+        await ctx.send("🔇 Trebuie să fii într-un canal vocal.")
+        return
+
+    channel = ctx.author.voice.channel
+    await ctx.send(f"🔌 Mă conectez la: {channel.name}")
+
+    try:
+        vc = await channel.connect()
+        await asyncio.sleep(1)
+
+        if not vc or not vc.is_connected():
+            await ctx.send("❌ Voice client NU este conectat (is_connected = False).")
+            return
+
+        await ctx.send("✅ Sunt conectat. Încerc să redau un sunet de test...")
+
+        test_url = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+        source = discord.FFmpegPCMAudio(test_url)
+        vc.play(source)
+
+        await ctx.send("🎵 Se redă sunetul. Aștept 10 secunde înainte să ies...")
+        await asyncio.sleep(10)
+
+        await vc.disconnect()
+        await ctx.send("👋 Am ieșit din voice.")
+
+    except Exception as e:
+        await ctx.send(f"❌ Eroare: {e}")
+
+@bot.command()
+async def test_connect(ctx):
+    if not ctx.author.voice:
+        await ctx.send("🔇 Trebuie să fii într-un canal vocal.")
+        return
+
+    channel = ctx.author.voice.channel
+    await ctx.send(f"🔌 Încerc să mă conectez la: {channel.name}")
+
+    try:
+        vc = await channel.connect()
+        await asyncio.sleep(1)
+
+        if vc.is_connected():
+            await ctx.send("✅ M-am conectat cu succes! Stau 5 secunde...")
+            await asyncio.sleep(5)
+            await vc.disconnect()
+            await ctx.send("👋 M-am deconectat.")
+        else:
+            await ctx.send("❌ M-am conectat dar `is_connected()` e False.")
+
+    except Exception as e:
+        await ctx.send(f"❌ Eroare la conectare: `{e}`")
+
+
 
 
 
